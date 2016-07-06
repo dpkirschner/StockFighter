@@ -2,6 +2,7 @@
 
 var unirest = require('unirest');
 var secrets = require('./secrets');
+var Promise = require('promise');
 
 var test = {
 	account: 'EXB123456',
@@ -15,74 +16,96 @@ var actual = {
 	stock: 'KOIG',
 }
 
-var useTest = false;
+var useTest = true;
 
 var baseUrl = 'https://api.stockfighter.io/ob/api';
 
-function getQuote(qty) {
-	var base = useTest ? test : actual
-	unirest
-		.get(baseUrl + /venues/ + base.venue + '/stocks/' + base.stock + '/quote')
-		.headers(
-			{'Accept': 'application/json',
-			'Content-Type': 'application/json',
-			'X-Starfighter-Authorization': secrets.API_KEY,
-			})
-		.end(function (response) {
-			var quote = response.body;
-			//if we haven't hit our goal and there is someone selling the stock we want
-	  		if(quote.ask) {
-	  			console.log("Trying to purchase " + 100 + " units at " + quote.ask + " per.");
-	  			postOrder(100, quote.ask);
-	  			return;
-	  		}
-	  		//no pricing information so cycle again until we have some.
-	  		getQuote();
-		});
+
+function getQuote(venue, stock, qty) {
+	return new Promise(function (fulfill, reject){
+		unirest
+			.get(baseUrl + /venues/ + venue + '/stocks/' + stock + '/quote')
+			.headers(
+				{'Accept': 'application/json',
+				'Content-Type': 'application/json',
+				'X-Starfighter-Authorization': secrets.API_KEY,
+				})
+			.end(function (response) {
+				var quote = response.body;
+				if(!quote.ok) {
+					//if there was a problem
+					return reject(quote.error);
+				} else if(quote.ask) {
+					return fulfill(quote);
+				} else {
+					return getQuote(venue, stock, qty);
+				}
+			});
+	});
 }
 
-function postOrder(qty, price) {
-	console.log("posting order");
-	var base = useTest ? test : actual
-	unirest
-		.post(baseUrl + /venues/ + base.venue + '/stocks/' + base.stock + '/orders')
-		.headers(
-			{'Accept': 'application/json',
-			'Content-Type': 'application/json',
-			'X-Starfighter-Authorization': secrets.API_KEY,
+function postOrder(account, venue, stock, qty, price) {
+	console.log("Trying to purchase " + qty + " units at " + price + " per.");
+	return new Promise(function (fulfill, reject){
+		unirest
+			.post(baseUrl + /venues/ + base.venue + '/stocks/' + base.stock + '/orders')
+			.headers(
+				{'Accept': 'application/json',
+				'Content-Type': 'application/json',
+				'X-Starfighter-Authorization': secrets.API_KEY,
+				})
+			.send({
+			    "account": base.account,
+			    "price": price,
+			    "qty": qty,
+			    "direction": "buy",
+			    "orderType": "limit"
 			})
-		.send({
-		    "account": base.account,
-		    "price": price,
-		    "qty": qty,
-		    "direction": "buy",
-		    "orderType": "limit"
-		})
-		.end(function (response) {
-			var order = response.body;
-			console.log("posted order with id:" + order.id);
-			getStatus(order.id);
-		});
+			.end(function (response) {
+				var order = response.body;
+				console.log("posted order with id:" + order.id);
+				if(!order.ok) {
+					//if there was a problem
+					return reject(order.error);
+				} 
+				
+				return fulfill(order);
+			});
+	});
 }
 
 function getStatus(id) {
-	var base = useTest ? test : actual
-	unirest
-		.get(baseUrl + /venues/ + base.venue + '/stocks/' + base.stock + '/orders/' + id)
-		.headers(
-			{'Accept': 'application/json',
-			'Content-Type': 'application/json',
-			'X-Starfighter-Authorization': secrets.API_KEY,
-			})
-		.end(function (response) {
-	  		var status = response.body;
-	  		if(status.open === false) {
-	  			console.log("order completed!")
-	  			return;
-	  		}
-	  		//if not all of our order has been filled, keep checking until it is.
-	  		getStatus(id);
-		});
+	console.log("getting status for order: " + id);
+	return new Promise(function (fulfill, reject){
+		unirest
+			.get(baseUrl + /venues/ + base.venue + '/stocks/' + base.stock + '/orders/' + id)
+			.headers(
+				{'Accept': 'application/json',
+				'Content-Type': 'application/json',
+				'X-Starfighter-Authorization': secrets.API_KEY,
+				})
+			.end(function (response) {
+				var status = response.body;
+				if(!status.ok) {
+					//if there was a problem
+					return reject(status.error);
+				} else if(status.open === false) {
+					//if our order was filled
+		  			return fulfill(status);
+		  		}
+	  			console.log(status)
+	  			//if the order wasn't filled
+	  			return getStatus(id);
+			});
+	  });
 }
 
-getQuote(100);
+var base = useTest ? test : actual;
+var baseQty = 100;
+getQuote(base.venue, base.stock, baseQty)
+	.then(	quote => postOrder(base.account, base.venue, base.stock, baseQty, quote.ask))
+	.then(	order => getStatus(order.id))
+	.done( result => console.log(result)
+			, error => console.log("ERRORKJHFK:" + error))
+
+//getStatus(100).then(response => console.log("sucess: " + response), response => console.log("error: " + response));
